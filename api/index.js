@@ -103,9 +103,6 @@ app.get('/api/movies', (req, res) => {
   return res.status(200).json(data);
 });
 
-const PORT = 5000;
-// Passing 0.0.0.0 tells Node to listen on all network interfaces (Wi-Fi, LAN, localhost)
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Backend server running locally on port ${PORT} using database.json 🚀`);
-  console.log(`Accessible to any mobile device on your network!`);
-});
+
+module.exports = app;
+
