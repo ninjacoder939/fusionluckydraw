@@ -100,4 +100,9 @@ app.get('/api/movies', async (req, res) => {
   return res.status(200).json(data);
 });
 
+// 3. GET API ENDPOINT - Health
+app.get('/api/health', async (req, res) => {
+  return res.status(200).json({"health":"all good!"});
+});
+
 module.exports = app;
