@@ -1,75 +1,72 @@
-// backend.js
 const express = require('express');
-const cors = require('cors'); // Handles cross-origin security permissions
+const cors = require('cors'); 
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
+const { put, get } = require('@vercel/blob'); // ✅ Import Vercel Blob SDK
 
 const app = express();
 
-// --- CRITICAL CONFIGURATION CHANGE FOR MOBILE APP ACCESS ---
-// This allows any external mobile app, emulator, or client to safely send requests
 app.use(cors({
-  origin: '*', // Allow access from any origin
-  methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allowed API actions
-  allowedHeaders: ['Content-Type', 'Authorization'] // Allowed metadata headers
+  origin: '*', 
+  methods: ['GET', 'POST', 'PUT', 'DELETE'], 
+  allowedHeaders: ['Content-Type', 'Authorization'] 
 }));
 
 app.use(express.json());
 
-const DB_FILE = path.join(__dirname, 'database.json');
-
-// Helper function to safely read from our JSON database file
-const readDatabase = () => {
-  try {
-    if (!fs.existsSync(DB_FILE)) {
-      fs.writeFileSync(DB_FILE, JSON.stringify([], null, 2));
-      return [];
-    }
-    const fileData = fs.readFileSync(DB_FILE, 'utf8');
-    return JSON.parse(fileData || '[]');
-  } catch (error) {
-    console.error('Error reading JSON file:', error);
-    return [];
-  }
-};
-
-// Helper function to safely write updates back to our JSON database file
-const writeDatabase = (data) => {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
-  } catch (error) {
-    console.error('Error writing to JSON file:', error);
-  }
-};
-
-// MULTER FILE STORAGE CONFIGURATION
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/'); 
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname)); 
-  }
-});
+// ✅ FIX 1: Configure Multer to store uploaded files in RAM buffer (No local disk usage)
+const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// Ensure local uploads folder exists
-if (!fs.existsSync('./uploads')){
-    fs.mkdirSync('./uploads');
-}
+// ✅ Helper: Safely fetch the database array from your Vercel Blob bucket
+const readDatabaseFromBlob = async () => {
+  try {
+    // Vercel Blob stores files at fixed token URLs. We fetch the raw content.
+    // We append a cache-busting timestamp to avoid getting old static data.
+    const url = `${process.env.BLOB_DATABASE_URL}?t=${Date.now()}`;
+    const response = await fetch(url);
+    if (!response.ok) return [];
+    return await response.json();
+  } catch (error) {
+    console.error('Error reading database from Blob:', error);
+    return []; // Return empty array if file doesn't exist yet
+  }
+};
 
-// 1. POST API ENDPOINT - Write to JSON File
-app.post('/api/movies', upload.single('ticketImage'), (req, res) => {
+// ✅ Helper: Overwrite the database JSON file inside your Vercel Blob bucket
+const writeDatabaseToBlob = async (data) => {
+  try {
+    const jsonBuffer = Buffer.from(JSON.stringify(data, null, 2));
+    
+    // Uploads and overwrites 'database.json' in your bucket root
+    await put('database.json', jsonBuffer, {
+      access: 'public',
+      addRandomSuffix: false, // Prevents creating duplicate database files like database-xyz.json
+    });
+  } catch (error) {
+    console.error('Error writing database to Blob:', error);
+  }
+};
+
+// 1. POST API ENDPOINT - Save Ticket Image and Booking Log to Blob Storage
+app.post('/api/movies', upload.single('ticketImage'), async (req, res) => {
   try {
     const { phone, email, movieName, movieDateTime } = req.body;
-    const ticketImagePath = req.file ? req.file.path : null;
 
-    if (!phone || !email || !movieName || !movieDateTime || !ticketImagePath) {
+    // Check if the file buffer exists in memory
+    if (!phone || !email || !movieName || !movieDateTime || !req.file) {
       return res.status(400).json({ message: 'All form fields and image are required.' });
     }
 
-    const currentBookings = readDatabase();
+    // A. Upload the Ticket Image to Vercel Blob
+    const uniqueImageName = `uploads/${Date.now()}-${req.file.originalname}`;
+    const imageBlob = await put(uniqueImageName, req.file.buffer, {
+      access: 'public',
+      contentType: req.file.mimetype
+    });
+
+    // B. Fetch existing logs, append new log, and update bucket
+    const currentBookings = await readDatabaseFromBlob();
 
     const newBooking = {
       id: Date.now().toString(),
@@ -77,17 +74,17 @@ app.post('/api/movies', upload.single('ticketImage'), (req, res) => {
       email,
       movieName,
       movieDateTime,
-      ticketImagePath,
+      ticketImagePath: imageBlob.url, // ✅ This is now a permanent public https:// url!
       createdAt: new Date().toISOString()
     };
 
     currentBookings.push(newBooking);
-    writeDatabase(currentBookings);
+    await writeDatabaseToBlob(currentBookings);
 
-    console.log('Successfully recorded to database.json ✅:', newBooking);
+    console.log('Successfully recorded to Vercel Blob database.json ✅:', newBooking);
 
     return res.status(200).json({ 
-      message: 'Booking successfully saved to local JSON database!',
+      message: 'Booking successfully saved to Vercel Blob store!',
       data: newBooking
     });
 
@@ -97,12 +94,10 @@ app.post('/api/movies', upload.single('ticketImage'), (req, res) => {
   }
 });
 
-// 2. GET API ENDPOINT - Retrieve all bookings
-app.get('/api/movies', (req, res) => {
-  const data = readDatabase();
+// 2. GET API ENDPOINT - Retrieve all bookings directly from Blob Storage
+app.get('/api/movies', async (req, res) => {
+  const data = await readDatabaseFromBlob();
   return res.status(200).json(data);
 });
 
-
 module.exports = app;
-
