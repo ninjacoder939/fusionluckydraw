@@ -100,4 +100,7 @@ app.get('/api/movies', async (req, res) => {
   return res.status(200).json(data);
 });
 
+app.get('/api/health', async(req, res) =>{
+  return res.status(200).json({"health": "All good!"});
+});
 module.exports = app;
