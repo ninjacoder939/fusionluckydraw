@@ -53,7 +53,9 @@ app.post('/api/movies', async (req, res) => {
     }
 
     // Extract the multi-part payload boundary token string map
-    const boundaryMatch = contentType.match(/boundary=(.+)\$/);
+    //const boundaryMatch = contentType.match(/boundary=(.+)\$/);
+    // CORRECT — capture boundary (quoted or not), stop at ; or end
+    const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
     if (!boundaryMatch) {
       return res.status(400).json({ message: 'Missing multipart boundary.' });
     }
