@@ -1,8 +1,8 @@
+// index.js
 const express = require('express');
 const cors = require('cors'); 
-const multer = require('multer');
 const path = require('path');
-const { put, get } = require('@vercel/blob'); // ✅ Import Vercel Blob SDK
+const { put } = require('@vercel/blob'); // ✅ Import Vercel Blob SDK
 
 const app = express();
 
@@ -12,24 +12,22 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'] 
 }));
 
+// Express parses standard json
 app.use(express.json());
 
-// ✅ FIX 1: Configure Multer to store uploaded files in RAM buffer (No local disk usage)
-const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
+// ✅ FIX 1: Read incoming body as a raw stream buffer instead of letting multer drop it
+app.use(express.raw({ type: 'multipart/form-data', limit: '20mb' }));
 
 // ✅ Helper: Safely fetch the database array from your Vercel Blob bucket
 const readDatabaseFromBlob = async () => {
   try {
-    // Vercel Blob stores files at fixed token URLs. We fetch the raw content.
-    // We append a cache-busting timestamp to avoid getting old static data.
     const url = `${process.env.BLOB_DATABASE_URL}?t=${Date.now()}`;
     const response = await fetch(url);
     if (!response.ok) return [];
     return await response.json();
   } catch (error) {
     console.error('Error reading database from Blob:', error);
-    return []; // Return empty array if file doesn't exist yet
+    return []; 
   }
 };
 
@@ -37,35 +35,84 @@ const readDatabaseFromBlob = async () => {
 const writeDatabaseToBlob = async (data) => {
   try {
     const jsonBuffer = Buffer.from(JSON.stringify(data, null, 2));
-    
-    // Uploads and overwrites 'database.json' in your bucket root
     await put('database.json', jsonBuffer, {
       access: 'public',
-      addRandomSuffix: false, // Prevents creating duplicate database files like database-xyz.json
+      addRandomSuffix: false, 
     });
   } catch (error) {
     console.error('Error writing database to Blob:', error);
   }
 };
 
-// 1. POST API ENDPOINT - Save Ticket Image and Booking Log to Blob Storage
-app.post('/api/movies', upload.single('ticketImage'), async (req, res) => {
+// 2. POST API ENDPOINT - Serverless Optimized Image and Text Payload Processing
+app.post('/api/movies', async (req, res) => {
   try {
-    const { phone, email, movieName, movieDateTime } = req.body;
+    const contentType = req.headers['content-type'];
+    if (!contentType || !contentType.includes('multipart/form-data')) {
+      return res.status(400).json({ message: 'Invalid Content-Type framework pattern.' });
+    }
 
-    // Check if the file buffer exists in memory
-    if (!phone || !email || !movieName || !movieDateTime || !req.file) {
+    // Extract the multi-part payload boundary token string map
+    const boundaryMatch = contentType.match(/boundary=(.+)\$/);
+    if (!boundaryMatch) {
+      return res.status(400).json({ message: 'Missing multipart boundary.' });
+    }
+    const boundary = boundaryMatch[1];
+
+    // Convert raw body stream blocks to parse data strings cleanly
+    const rawBodyText = req.body.toString('binary');
+    const parts = rawBodyText.split(`--${boundary}`);
+
+    let fields = {};
+    let fileBuffer = null;
+    let fileName = 'ticket.jpg';
+    let fileMimeType = 'image/jpeg';
+
+    for (const part of parts) {
+      if (part.trim() === '' || part.trim() === '--') continue;
+
+      const [headerSection, bodySectionWithEnding] = part.split('\r\n\r\n');
+      if (!bodySectionWithEnding) continue;
+
+      // Strip structural transport line breaks from extracted block string metrics
+      let bodySection = bodySectionWithEnding;
+      if (bodySection.endsWith('\r\n')) {
+        bodySection = bodySection.slice(0, -2);
+      }
+
+      const nameMatch = headerSection.match(/name="([^"]+)"/);
+      if (!nameMatch) continue;
+      const fieldName = nameMatch[1];
+
+      if (fieldName === 'ticketImage') {
+        const filenameMatch = headerSection.match(/filename="([^"]+)"/);
+        if (filenameMatch) fileName = filenameMatch[1];
+
+        const typeMatch = headerSection.match(/Content-Type:\s*([^\r\n]+)/i);
+        if (typeMatch) fileMimeType = typeMatch[1];
+
+        // Convert the structural text sequence chunk straight back into clean binary data
+        fileBuffer = Buffer.from(bodySection, 'binary');
+      } else {
+        fields[fieldName] = Buffer.from(bodySection, 'binary').toString('utf8');
+      }
+    }
+
+    const { phone, email, movieName, movieDateTime } = fields;
+
+    // Check if variables or binary records passed validations
+    if (!phone || !email || !movieName || !movieDateTime || !fileBuffer) {
       return res.status(400).json({ message: 'All form fields and image are required.' });
     }
 
-    // A. Upload the Ticket Image to Vercel Blob
-    const uniqueImageName = `uploads/${Date.now()}-${req.file.originalname}`;
-    const imageBlob = await put(uniqueImageName, req.file.buffer, {
+    // A. Upload the Ticket Image to Vercel Blob Storage directly from RAM memory blocks
+    const uniqueImageName = `uploads/${Date.now()}-${fileName.replace(/\s+/g, '_')}`;
+    const imageBlob = await put(uniqueImageName, fileBuffer, {
       access: 'public',
-      contentType: req.file.mimetype
+      contentType: fileMimeType
     });
 
-    // B. Fetch existing logs, append new log, and update bucket
+    // B. Fetch logs array stream data, append tracking entry block, map adjustments back to cloud bucket
     const currentBookings = await readDatabaseFromBlob();
 
     const newBooking = {
@@ -74,7 +121,7 @@ app.post('/api/movies', upload.single('ticketImage'), async (req, res) => {
       email,
       movieName,
       movieDateTime,
-      ticketImagePath: imageBlob.url, // ✅ This is now a permanent public https:// url!
+      ticketImagePath: imageBlob.url, 
       createdAt: new Date().toISOString()
     };
 
@@ -94,15 +141,15 @@ app.post('/api/movies', upload.single('ticketImage'), async (req, res) => {
   }
 });
 
-// 2. GET API ENDPOINT - Retrieve all bookings directly from Blob Storage
+// 3. GET API ENDPOINT - Retrieve all bookings directly from Blob Storage
 app.get('/api/movies', async (req, res) => {
   const data = await readDatabaseFromBlob();
   return res.status(200).json(data);
 });
 
-// 3. GET API ENDPOINT - Health
+// 4. GET API ENDPOINT - Health
 app.get('/api/health', async (req, res) => {
-  return res.status(200).json({"health":"all good!"});
+  return res.status(200).json({ "health": "all good!" });
 });
 
 module.exports = app;
